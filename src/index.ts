@@ -28,3 +28,5 @@ export type {
 // Utils
 export { getInitials } from './utils/initials';
 export { formatDateLabel } from './utils/dateFormat';
+export { isNodeVisible, cullNodes } from './utils/viewportCulling';
+export type { Viewport } from './utils/viewportCulling';

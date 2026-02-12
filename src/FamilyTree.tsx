@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import type { FamilyTreeProps } from './types';
 import { computeLayout } from './layout/familyLayout';
 import { resolveTheme } from './themes';

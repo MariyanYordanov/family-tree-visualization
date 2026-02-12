@@ -1,10 +1,14 @@
-import React, { useMemo } from 'react';
-import { StyleSheet } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { StyleSheet, type LayoutChangeEvent } from 'react-native';
 import Svg, { G } from 'react-native-svg';
 import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
+import Animated, {
+  useAnimatedStyle,
+  useAnimatedReaction,
+  runOnJS,
+} from 'react-native-reanimated';
 import type { Person, TreeTheme, FamilyTreeProps } from '../types';
-import type { TreeLayout } from '../layout/types';
+import type { TreeLayout, LayoutNode, LayoutEdge } from '../layout/types';
 import { TreeNode } from './TreeNode';
 import { TreeEdge } from './TreeEdge';
 import { usePanZoom, type PanZoomConfig } from '../gestures/usePanZoom';
@@ -27,10 +31,22 @@ interface TreeCanvasProps {
 }
 
 const PADDING = 40;
+/** Only activate viewport culling when node count exceeds this threshold. */
+const CULLING_THRESHOLD = 50;
+/** Extra margin (in tree-space units) around the viewport for culling. */
+const CULLING_MARGIN = 200;
+
+interface VisibleBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
 
 /**
  * SVG canvas that renders all tree nodes and edges.
  * Supports pan, pinch-to-zoom, and double-tap-to-reset gestures.
+ * For large trees (50+ nodes), viewport culling skips off-screen nodes.
  */
 export const TreeCanvas = React.memo(function TreeCanvas({
   layout,
@@ -50,7 +66,80 @@ export const TreeCanvas = React.memo(function TreeCanvas({
   const svgWidth = layout.width + PADDING * 2;
   const svgHeight = layout.height + PADDING * 2;
 
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [visibleBounds, setVisibleBounds] = useState<VisibleBounds | null>(
+    null,
+  );
+
+  const enableCulling = layout.nodes.length > CULLING_THRESHOLD;
+
+  const onContainerLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setContainerSize({ width, height });
+  }, []);
+
   const { gesture, state } = usePanZoom(gestureConfig);
+
+  // Track viewport changes for culling (grid-snapped to reduce re-renders)
+  const updateVisibleBounds = useCallback(
+    (bounds: VisibleBounds) => {
+      setVisibleBounds(bounds);
+    },
+    [],
+  );
+
+  useAnimatedReaction(
+    () => {
+      // Snap to 50px grid to reduce update frequency
+      const tx = Math.round(state.translateX.value / 50) * 50;
+      const ty = Math.round(state.translateY.value / 50) * 50;
+      const s = Math.round(state.scale.value * 10) / 10;
+      return `${tx},${ty},${s}`;
+    },
+    (current, previous) => {
+      if (current === previous) return;
+      if (!enableCulling || containerSize.width === 0) return;
+
+      const parts = current.split(',');
+      const tx = Number(parts[0]);
+      const ty = Number(parts[1]);
+      const s = Number(parts[2]) || 1;
+
+      const left = -tx / s - PADDING - CULLING_MARGIN;
+      const top = -ty / s - PADDING - CULLING_MARGIN;
+      const right = (containerSize.width - tx) / s - PADDING + CULLING_MARGIN;
+      const bottom =
+        (containerSize.height - ty) / s - PADDING + CULLING_MARGIN;
+
+      runOnJS(updateVisibleBounds)({ left, top, right, bottom });
+    },
+    [enableCulling, containerSize],
+  );
+
+  // Filter nodes/edges by visibility
+  const visibleNodes: LayoutNode[] = useMemo(() => {
+    if (!enableCulling || !visibleBounds) return layout.nodes;
+    return layout.nodes.filter(
+      (node) =>
+        node.x + nodeWidth > visibleBounds.left &&
+        node.x < visibleBounds.right &&
+        node.y + nodeHeight > visibleBounds.top &&
+        node.y < visibleBounds.bottom,
+    );
+  }, [layout.nodes, visibleBounds, enableCulling, nodeWidth, nodeHeight]);
+
+  const visibleNodeIds = useMemo(() => {
+    if (!enableCulling) return null;
+    return new Set(visibleNodes.map((n) => n.id));
+  }, [visibleNodes, enableCulling]);
+
+  const visibleEdges: LayoutEdge[] = useMemo(() => {
+    if (!enableCulling || !visibleNodeIds) return layout.edges;
+    return layout.edges.filter(
+      (edge) =>
+        visibleNodeIds.has(edge.fromId) || visibleNodeIds.has(edge.toId),
+    );
+  }, [layout.edges, visibleNodeIds, enableCulling]);
 
   const { handleTap, handleLongPress } = useTapHandler({
     nodes: layout.nodes,
@@ -99,10 +188,10 @@ export const TreeCanvas = React.memo(function TreeCanvas({
 
   const edges = useMemo(
     () =>
-      layout.edges.map((edge) => {
+      visibleEdges.map((edge) => {
         if (renderEdge) {
-          const fromNode = layout.nodes.find((n) => n.id === edge.fromId);
-          const toNode = layout.nodes.find((n) => n.id === edge.toId);
+          const fromNode = visibleNodes.find((n) => n.id === edge.fromId);
+          const toNode = visibleNodes.find((n) => n.id === edge.toId);
           if (fromNode && toNode) {
             const custom = renderEdge(
               fromNode.person,
@@ -125,12 +214,12 @@ export const TreeCanvas = React.memo(function TreeCanvas({
           />
         );
       }),
-    [layout.edges, layout.nodes, theme, renderEdge],
+    [visibleEdges, visibleNodes, theme, renderEdge],
   );
 
   const nodes = useMemo(
     () =>
-      layout.nodes.map((node) => {
+      visibleNodes.map((node) => {
         if (renderNode) {
           const custom = renderNode(node.person, {
             x: node.x,
@@ -162,7 +251,7 @@ export const TreeCanvas = React.memo(function TreeCanvas({
         );
       }),
     [
-      layout.nodes,
+      visibleNodes,
       nodeWidth,
       nodeHeight,
       theme,
@@ -179,6 +268,7 @@ export const TreeCanvas = React.memo(function TreeCanvas({
   return (
     <GestureHandlerRootView
       style={[styles.container, { backgroundColor: theme.backgroundColor }]}
+      onLayout={onContainerLayout}
     >
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={[styles.canvas, animatedStyle]}>

@@ -1,4 +1,4 @@
-import type { Person, Relationship } from '../types';
+import type { Person } from '../types';
 
 /**
  * Internal graph node with adjacency information.
