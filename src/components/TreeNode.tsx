@@ -40,11 +40,28 @@ export const TreeNode = React.memo(function TreeNode({
     opacity = 0.6;
   }
 
+  // Sepia tint: warm brownish overlay for deceased nodes
+  const useSepia = isDeceased && deceasedStyle === 'sepia';
+  const bgColor = useSepia ? '#F5E6D3' : theme.nodeBackgroundColor;
+  const borderColor = useSepia ? '#C4A882' : theme.nodeBorderColor;
+  const textColor = useSepia ? '#6B5B4A' : theme.nodeTextColor;
+
   const photoX = x + (width - photoSize) / 2;
   const photoY = y + padding;
 
+  // Build effective theme with sepia overrides
+  const effectiveTheme = useSepia
+    ? {
+        ...theme,
+        nodeBackgroundColor: bgColor,
+        nodeBorderColor: borderColor,
+        nodeTextColor: textColor,
+        photoPlaceholderColor: '#E0D0BE',
+      }
+    : theme;
+
   const nameY = showPhotos ? photoY + photoSize + 14 : y + padding + 14;
-  const dateY = nameY + theme.fontSize + 4;
+  const dateY = nameY + effectiveTheme.fontSize + 4;
 
   return (
     <G opacity={opacity}>
@@ -56,8 +73,8 @@ export const TreeNode = React.memo(function TreeNode({
         height={height}
         rx={12}
         ry={12}
-        fill={theme.nodeBackgroundColor}
-        stroke={theme.nodeBorderColor}
+        fill={bgColor}
+        stroke={borderColor}
         strokeWidth={1.5}
       />
 
@@ -70,7 +87,7 @@ export const TreeNode = React.memo(function TreeNode({
           y={photoY}
           size={photoSize}
           shape={photoShape}
-          theme={theme}
+          theme={effectiveTheme}
         />
       )}
 
@@ -78,10 +95,10 @@ export const TreeNode = React.memo(function TreeNode({
       <Text
         x={x + width / 2}
         y={nameY}
-        fontSize={theme.fontSize}
-        fontFamily={theme.fontFamily}
+        fontSize={effectiveTheme.fontSize}
+        fontFamily={effectiveTheme.fontFamily}
         fontWeight="600"
-        fill={theme.nodeTextColor}
+        fill={textColor}
         textAnchor="middle"
       >
         {person.name}
@@ -94,7 +111,7 @@ export const TreeNode = React.memo(function TreeNode({
           deathYear={person.deathYear}
           x={x + width / 2}
           y={dateY}
-          theme={theme}
+          theme={effectiveTheme}
         />
       )}
     </G>

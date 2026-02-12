@@ -1,5 +1,6 @@
 import type { GraphNode, LayoutConfig, LayoutNode, LayoutEdge } from './types';
 import { buildFamilyUnits } from './spouseLayout';
+import { buildMultiMarriageGroups } from './multiMarriageLayout';
 
 /**
  * Calculate X/Y positions for all nodes in the graph.
@@ -7,9 +8,9 @@ import { buildFamilyUnits } from './spouseLayout';
  * Algorithm:
  * 1. Sort generations top-to-bottom (lowest generation number = top row)
  * 2. For each generation, group nodes into family units (couples)
- * 3. Position units left-to-right within each generation
- * 4. Center children below their parent unit's midpoint
- * 5. Second pass: adjust positions to minimize edge crossings
+ * 3. For multi-marriage units, sub-group children per marriage
+ * 4. Position units left-to-right within each generation
+ * 5. Center children below their parent unit's midpoint (per marriage group)
  */
 export function calculatePositions(
   graph: Map<string, GraphNode>,
@@ -24,11 +25,13 @@ export function calculatePositions(
   // Sort generation keys
   const genKeys = Array.from(generations.keys()).sort((a, b) => a - b);
 
-  // Map each node to its x-slot within its generation
   const nodePositions = new Map<string, { x: number; y: number }>();
 
-  // First pass: assign initial positions
-  // Process from top generation to bottom
+  // Build a map of child→parent-unit midpoint for centering
+  // childGrouping: childId → { parentIds, spousePairCenter }
+  const childToParentCenter = new Map<string, number>();
+
+  // First pass: assign initial positions top-to-bottom
   for (const genKey of genKeys) {
     const genNodes = generations.get(genKey)!;
     const units = buildFamilyUnits(genNodes, graph);
@@ -38,7 +41,6 @@ export function calculatePositions(
 
     for (const unit of units) {
       // Check if children of this unit have already been positioned
-      // If so, center the parents above the children
       const childPositions = unit.children
         .map((childId) => nodePositions.get(childId))
         .filter(Boolean) as Array<{ x: number; y: number }>;
@@ -46,7 +48,6 @@ export function calculatePositions(
       let unitStartX: number;
 
       if (childPositions.length > 0) {
-        // Center this unit above its children
         const childMinX = Math.min(...childPositions.map((p) => p.x));
         const childMaxX = Math.max(...childPositions.map((p) => p.x));
         const childCenter = (childMinX + childMaxX) / 2;
@@ -56,20 +57,50 @@ export function calculatePositions(
         unitStartX = xCursor;
       }
 
-      // Ensure no overlap with already-placed nodes
       unitStartX = Math.max(unitStartX, xCursor);
 
+      // Position members
       for (let i = 0; i < unit.members.length; i++) {
         const member = unit.members[i];
         const x = unitStartX + i * cellWidth;
         nodePositions.set(member.person.id, { x, y });
         xCursor = x + cellWidth;
       }
+
+      // For multi-marriage: compute per-spouse-pair centers for child grouping
+      const primaryMember = unit.members[0];
+      const multiGroup = buildMultiMarriageGroups(primaryMember, graph);
+
+      if (multiGroup && multiGroup.spouseGroups.length > 1) {
+        // Multi-marriage: assign each child group a center based on the
+        // midpoint between the central person and the respective spouse
+        const centralPos = nodePositions.get(primaryMember.person.id)!;
+
+        for (const sg of multiGroup.spouseGroups) {
+          const spousePos = nodePositions.get(sg.spouse.person.id);
+          if (!spousePos) continue;
+
+          const pairCenter = (centralPos.x + spousePos.x) / 2 + nodeWidth / 2;
+          for (const childId of sg.children) {
+            childToParentCenter.set(childId, pairCenter);
+          }
+        }
+      } else {
+        // Single marriage or no spouse: center under the whole unit
+        const unitMinX = unitStartX;
+        const unitMaxX = unitStartX + (unit.members.length - 1) * cellWidth;
+        const unitCenter = (unitMinX + unitMaxX) / 2 + nodeWidth / 2;
+
+        for (const childId of unit.children) {
+          if (!childToParentCenter.has(childId)) {
+            childToParentCenter.set(childId, unitCenter);
+          }
+        }
+      }
     }
   }
 
-  // Second pass: center children below parents
-  // Process generations from top to bottom again
+  // Second pass: center children below their parent pair
   for (const genKey of genKeys) {
     const genNodes = generations.get(genKey)!;
     const units = buildFamilyUnits(genNodes, graph);
@@ -84,30 +115,60 @@ export function calculatePositions(
 
       if (parentPositions.length === 0) continue;
 
-      const parentMinX = Math.min(...parentPositions.map((p) => p.x));
-      const parentMaxX = Math.max(...parentPositions.map((p) => p.x));
-      const parentCenter = (parentMinX + parentMaxX) / 2;
+      // Check for multi-marriage sub-grouping
+      const primaryMember = unit.members[0];
+      const multiGroup = buildMultiMarriageGroups(primaryMember, graph);
 
-      // Get children that have been positioned
-      const positionedChildren = unit.children.filter((id) =>
-        nodePositions.has(id),
-      );
-      if (positionedChildren.length === 0) continue;
+      if (multiGroup && multiGroup.spouseGroups.length > 1) {
+        // Center each child group under its respective spouse pair
+        for (const sg of multiGroup.spouseGroups) {
+          const positionedChildren = sg.children.filter((id) =>
+            nodePositions.has(id),
+          );
+          if (positionedChildren.length === 0) continue;
 
-      // Calculate current children center
-      const childPos = positionedChildren
-        .map((id) => nodePositions.get(id)!)
-        .sort((a, b) => a.x - b.x);
-      const childMinX = childPos[0].x;
-      const childMaxX = childPos[childPos.length - 1].x;
-      const childCenter = (childMinX + childMaxX) / 2;
+          const pairCenter = childToParentCenter.get(sg.children[0]);
+          if (pairCenter == null) continue;
 
-      // Shift children to be centered under parents
-      const shift = parentCenter - childCenter;
-      if (Math.abs(shift) > 1) {
-        for (const childId of positionedChildren) {
-          const pos = nodePositions.get(childId)!;
-          pos.x += shift;
+          const childPos = positionedChildren
+            .map((id) => nodePositions.get(id)!)
+            .sort((a, b) => a.x - b.x);
+          const childMinX = childPos[0].x;
+          const childMaxX = childPos[childPos.length - 1].x;
+          const childCenter = (childMinX + childMaxX) / 2 + nodeWidth / 2;
+
+          const shift = pairCenter - childCenter;
+          if (Math.abs(shift) > 1) {
+            for (const childId of positionedChildren) {
+              const pos = nodePositions.get(childId)!;
+              pos.x += shift;
+            }
+          }
+        }
+      } else {
+        // Standard centering under unit
+        const parentMinX = Math.min(...parentPositions.map((p) => p.x));
+        const parentMaxX = Math.max(...parentPositions.map((p) => p.x));
+        const parentCenter = (parentMinX + parentMaxX) / 2;
+
+        const positionedChildren = unit.children.filter((id) =>
+          nodePositions.has(id),
+        );
+        if (positionedChildren.length === 0) continue;
+
+        const childPos = positionedChildren
+          .map((id) => nodePositions.get(id)!)
+          .sort((a, b) => a.x - b.x);
+        const childMinX = childPos[0].x;
+        const childMaxX = childPos[childPos.length - 1].x;
+        const childCenter = (childMinX + childMaxX) / 2;
+
+        const shift = parentCenter - childCenter;
+        if (Math.abs(shift) > 1) {
+          for (const childId of positionedChildren) {
+            const pos = nodePositions.get(childId)!;
+            pos.x += shift;
+          }
         }
       }
     }
