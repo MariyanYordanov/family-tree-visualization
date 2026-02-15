@@ -63,5 +63,9 @@
   "homepage": "https://github.com/MariyanYordanov/kintales-tree-view#readme",
   "bugs": {
     "url": "https://github.com/MariyanYordanov/kintales-tree-view/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
